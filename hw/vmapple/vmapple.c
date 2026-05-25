@@ -499,7 +499,9 @@ static void mach_vmapple_init(MachineState *machine)
     create_bdif(vms, sysmem);
     create_pvpanic(vms, sysmem);
     create_aes(vms, sysmem);
-    create_gfx(vms, sysmem);
+    if (machine->enable_graphics) {
+        create_gfx(vms, sysmem);
+    }
     create_uart(vms, VMAPPLE_UART, sysmem, serial_hd(0));
     create_rtc(vms);
     create_pcie(vms);
