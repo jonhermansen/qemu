@@ -52,6 +52,7 @@
 #include "system/system.h"
 #include "target/arm/gtimer.h"
 #include "target/arm/cpu.h"
+#include "hw/arm/machines-qom.h"
 
 struct VMAppleMachineState {
     MachineState parent;
@@ -609,6 +610,7 @@ static const TypeInfo vmapple_machine_info = {
     .instance_size = sizeof(VMAppleMachineState),
     .class_init    = vmapple_machine_class_init,
     .instance_init = vmapple_instance_init,
+    .interfaces    = aarch64_machine_interfaces,
 };
 
 static void machvmapple_machine_init(void)
