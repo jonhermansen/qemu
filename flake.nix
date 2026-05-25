@@ -50,6 +50,7 @@
 
           postPatch = ''
             sed -i '/^Rez /d; /^SetFile /d' scripts/entitlement.sh
+            sed -i 's/CONFIG_VMAPPLE=n/CONFIG_VMAPPLE=y/' configs/devices/aarch64-softmmu/default.mak
           '';
 
           preConfigure = ''
