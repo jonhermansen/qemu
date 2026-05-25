@@ -1,0 +1,81 @@
+{
+  "nodes": {
+    "berkeley-softfloat-3": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1532638343,
+        "narHash": "sha256-Yflpx+mjU8mD5biClNpdmon24EHg4aWBZszbOur5VEA=",
+        "owner": "qemu-project",
+        "repo": "berkeley-softfloat-3",
+        "rev": "b64af41c3276f97f0e181920400ee056b9c88037",
+        "type": "gitlab"
+      },
+      "original": {
+        "owner": "qemu-project",
+        "repo": "berkeley-softfloat-3",
+        "rev": "b64af41c3276f97f0e181920400ee056b9c88037",
+        "type": "gitlab"
+      }
+    },
+    "berkeley-testfloat-3": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1689946593,
+        "narHash": "sha256-inQAeYlmuiRtZm37xK9ypBltCJ+ycyvIeIYZK8a+RYU=",
+        "owner": "qemu-project",
+        "repo": "berkeley-testfloat-3",
+        "rev": "e7af9751d9f9fd3b47911f51a5cfd08af256a9ab",
+        "type": "gitlab"
+      },
+      "original": {
+        "owner": "qemu-project",
+        "repo": "berkeley-testfloat-3",
+        "rev": "e7af9751d9f9fd3b47911f51a5cfd08af256a9ab",
+        "type": "gitlab"
+      }
+    },
+    "keycodemapdb": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1677604609,
+        "narHash": "sha256-GbZ5mrUYLXMi0IX4IZzles0Oyc095ij2xAsiLNJwfKQ=",
+        "owner": "qemu-project",
+        "repo": "keycodemapdb",
+        "rev": "f5772a62ec52591ff6870b7e8ef32482371f22c6",
+        "type": "gitlab"
+      },
+      "original": {
+        "owner": "qemu-project",
+        "repo": "keycodemapdb",
+        "rev": "f5772a62ec52591ff6870b7e8ef32482371f22c6",
+        "type": "gitlab"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1779717553,
+        "narHash": "sha256-jubMijqIdL+i1d8q+lbPqkHkGqlGTCuIF8bWngBTkwk=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "04c899af35dc5001b0691486fe81e5767e5d1b07",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "master",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "berkeley-softfloat-3": "berkeley-softfloat-3",
+        "berkeley-testfloat-3": "berkeley-testfloat-3",
+        "keycodemapdb": "keycodemapdb",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
