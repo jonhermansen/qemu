@@ -2340,7 +2340,7 @@ static void hvf_sync_vtimer(CPUState *cpu)
  *
  * Returns true on success, false if the instruction is unrecognised.
  */
-static bool hvf_emulate_non_isv(CPUState *cpu, AddressSpace *as)
+static bool hvf_emulate_non_isv(CPUState *cpu, AddressSpace *as, uint64_t ipa)
 {
     CPUARMState *env = cpu_env(cpu);
     cpu_synchronize_state(cpu);
@@ -2366,18 +2366,21 @@ static bool hvf_emulate_non_isv(CPUState *cpu, AddressSpace *as)
 
     bool success = true;
 
+    /*
+     * Use `ipa` (the physical address from the HVF exception) for all
+     * address_space accesses.  The registers hold *virtual* addresses
+     * which are meaningless in physical address space.  For ldp/stp the
+     * second register is at ipa + reg_size.  Writeback computations
+     * still use the virtual base so the guest register is updated
+     * correctly.
+     */
     switch (inst & 0x7FC00000) {
     case 0x29400000: { /* ldp signed offset */
         uint32_t dst1 = inst & 0x1F;
-        uint64_t base = hvf_get_reg(cpu, (inst >> 5) & 0x1F);
         uint32_t dst2 = (inst >> 10) & 0x1F;
-        uint32_t off = (inst >> 15) & 0x7F;
         uint32_t reg_size = (inst & BIT(31)) == 0 ? 4 : 8;
-        uint64_t addr = (off & BIT(6)) == 0
-            ? base + (off * reg_size)
-            : base - ((64 - (off & 0x3F)) * reg_size);
         uint8_t data[16] = { 0 };
-        if (address_space_read(as, addr, MEMTXATTRS_UNSPECIFIED,
+        if (address_space_read(as, ipa, MEMTXATTRS_UNSPECIFIED,
                                data, reg_size * 2) == MEMTX_OK) {
             if (reg_size == 4) {
                 hvf_set_reg(cpu, dst1, ldl_le_p(data));
@@ -2393,13 +2396,8 @@ static bool hvf_emulate_non_isv(CPUState *cpu, AddressSpace *as)
     }
     case 0x29000000: { /* stp signed offset */
         uint64_t src1 = hvf_get_reg(cpu, inst & 0x1F);
-        uint64_t base = hvf_get_reg(cpu, (inst >> 5) & 0x1F);
         uint64_t src2 = hvf_get_reg(cpu, (inst >> 10) & 0x1F);
-        uint32_t off = (inst >> 15) & 0x7F;
         uint32_t reg_size = (inst & BIT(31)) == 0 ? 4 : 8;
-        uint64_t addr = (off & BIT(6)) == 0
-            ? base + (off * reg_size)
-            : base - ((64 - (off & 0x3F)) * reg_size);
         uint8_t data[16] = { 0 };
         if (reg_size == 4) {
             stl_le_p(data, src1 & 0xFFFFFFFF);
@@ -2408,7 +2406,7 @@ static bool hvf_emulate_non_isv(CPUState *cpu, AddressSpace *as)
             stq_le_p(data, src1);
             stq_le_p(data + reg_size, src2);
         }
-        success = address_space_write(as, addr, MEMTXATTRS_UNSPECIFIED,
+        success = address_space_write(as, ipa, MEMTXATTRS_UNSPECIFIED,
                                       data, reg_size * 2) == MEMTX_OK;
         break;
     }
@@ -2418,39 +2416,30 @@ static bool hvf_emulate_non_isv(CPUState *cpu, AddressSpace *as)
             if ((inst & BIT(10)) == 0) {
                 return false;
             }
-            bool post = (inst & BIT(11)) == 0;
             uint64_t src = hvf_get_reg(cpu, inst & 0x1F);
             uint32_t base_reg = (inst >> 5) & 0x1F;
             uint32_t reg_size = (inst & BIT(30)) == 0 ? 4 : 8;
             int32_t imm9 = sextract32(inst, 12, 9);
             uint64_t base_val = hvf_get_reg(cpu, base_reg);
-            uint64_t addr = base_val + (post ? 0 : imm9);
-            success = address_space_write(as, addr, MEMTXATTRS_UNSPECIFIED,
+            success = address_space_write(as, ipa, MEMTXATTRS_UNSPECIFIED,
                                           &src, reg_size) == MEMTX_OK;
             if (success) {
-                hvf_set_reg(cpu, base_reg,
-                            base_val + imm9);
+                hvf_set_reg(cpu, base_reg, base_val + imm9);
             }
             break;
         }
         case 0xB9000000: { /* str unsigned offset */
             uint64_t src = hvf_get_reg(cpu, inst & 0x1F);
-            uint64_t base = hvf_get_reg(cpu, (inst >> 5) & 0x1F);
-            uint32_t off = (inst >> 10) & 0xFFF;
             uint32_t reg_size = (inst & BIT(30)) == 0 ? 4 : 8;
-            uint64_t addr = base + (off * reg_size);
-            success = address_space_write(as, addr, MEMTXATTRS_UNSPECIFIED,
+            success = address_space_write(as, ipa, MEMTXATTRS_UNSPECIFIED,
                                           &src, reg_size) == MEMTX_OK;
             break;
         }
         case 0xB9400000: { /* ldr unsigned offset */
             uint32_t dst = inst & 0x1F;
-            uint64_t base = hvf_get_reg(cpu, (inst >> 5) & 0x1F);
-            uint32_t off = (inst >> 10) & 0xFFF;
             uint32_t reg_size = (inst & BIT(30)) == 0 ? 4 : 8;
-            uint64_t addr = base + (off * reg_size);
             uint64_t val = 0;
-            if (address_space_read(as, addr, MEMTXATTRS_UNSPECIFIED,
+            if (address_space_read(as, ipa, MEMTXATTRS_UNSPECIFIED,
                                    &val, reg_size) == MEMTX_OK) {
                 hvf_set_reg(cpu, dst, val);
             } else {
@@ -2462,19 +2451,16 @@ static bool hvf_emulate_non_isv(CPUState *cpu, AddressSpace *as)
             if ((inst & BIT(10)) == 0) {
                 return false;
             }
-            bool post = (inst & BIT(11)) == 0;
             uint32_t dst = inst & 0x1F;
             uint32_t base_reg = (inst >> 5) & 0x1F;
             uint32_t reg_size = (inst & BIT(30)) == 0 ? 4 : 8;
             int32_t imm9 = sextract32(inst, 12, 9);
             uint64_t base_val = hvf_get_reg(cpu, base_reg);
-            uint64_t addr = base_val + (post ? 0 : imm9);
             uint64_t val = 0;
-            if (address_space_read(as, addr, MEMTXATTRS_UNSPECIFIED,
+            if (address_space_read(as, ipa, MEMTXATTRS_UNSPECIFIED,
                                    &val, reg_size) == MEMTX_OK) {
                 hvf_set_reg(cpu, dst, val);
-                hvf_set_reg(cpu, base_reg,
-                            base_val + imm9);
+                hvf_set_reg(cpu, base_reg, base_val + imm9);
             } else {
                 success = false;
             }
@@ -2620,7 +2606,7 @@ static int hvf_handle_exception(CPUState *cpu, hv_vcpu_exit_exception_t *excp)
              * ISV=0: instruction syndrome not valid (stp, ldp, SIMD, etc.)
              * Fetch and decode the faulting instruction from guest memory.
              */
-            if (!hvf_emulate_non_isv(cpu, as)) {
+            if (!hvf_emulate_non_isv(cpu, as, ipa)) {
                 hvf_raise_exception(cpu, EXCP_DATA_ABORT, syndrome, 1);
                 break;
             }
