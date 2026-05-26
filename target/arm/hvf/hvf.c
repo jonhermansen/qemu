@@ -26,6 +26,7 @@
 #include "system/address-spaces.h"
 #include "system/memory.h"
 #include "hw/core/boards.h"
+#include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/arm/virt.h"
 #include "qemu/main-loop.h"
@@ -2327,6 +2328,170 @@ static void hvf_sync_vtimer(CPUState *cpu)
     }
 }
 
+/*
+ * Fetch the faulting instruction from guest memory and emulate MMIO
+ * accesses for instructions that don't set the ISV bit in the data
+ * abort syndrome (e.g. stp, ldp, str/ldr pre/post-index).
+ *
+ * Derived from ChefKiss Inferno's arm_aarch64_fallback_emu_single(),
+ * Copyright (c) 2025-2026 Visual Ehrmanntraut (VisualEhrmanntraut),
+ * licensed under the GNU Affero General Public License v3.0-or-later.
+ * See https://github.com/ChefKissInc/Inferno
+ *
+ * Returns true on success, false if the instruction is unrecognised.
+ */
+static bool hvf_emulate_non_isv(CPUState *cpu, AddressSpace *as)
+{
+    CPUARMState *env = cpu_env(cpu);
+    cpu_synchronize_state(cpu);
+
+    /* Translate PC virtual address to physical for instruction fetch. */
+    TranslateForDebugResult tres;
+    if (!cpu_translate_for_debug(cpu, env->pc, &tres)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "hvf: non-ISV: cannot translate PC 0x%llx\n",
+                      (unsigned long long)env->pc);
+        return false;
+    }
+
+    uint32_t inst = 0;
+    if (address_space_read(as, tres.physaddr, MEMTXATTRS_UNSPECIFIED,
+                           &inst, sizeof(inst)) != MEMTX_OK) {
+        qemu_log_mask(LOG_UNIMP,
+                      "hvf: non-ISV: cannot fetch insn at PA 0x%llx\n",
+                      (unsigned long long)tres.physaddr);
+        return false;
+    }
+    inst = le32_to_cpu(inst);
+
+    bool success = true;
+
+    switch (inst & 0x7FC00000) {
+    case 0x29400000: { /* ldp signed offset */
+        uint32_t dst1 = inst & 0x1F;
+        uint64_t base = hvf_get_reg(cpu, (inst >> 5) & 0x1F);
+        uint32_t dst2 = (inst >> 10) & 0x1F;
+        uint32_t off = (inst >> 15) & 0x7F;
+        uint32_t reg_size = (inst & BIT(31)) == 0 ? 4 : 8;
+        uint64_t addr = (off & BIT(6)) == 0
+            ? base + (off * reg_size)
+            : base - ((64 - (off & 0x3F)) * reg_size);
+        uint8_t data[16] = { 0 };
+        if (address_space_read(as, addr, MEMTXATTRS_UNSPECIFIED,
+                               data, reg_size * 2) == MEMTX_OK) {
+            if (reg_size == 4) {
+                hvf_set_reg(cpu, dst1, ldl_le_p(data));
+                hvf_set_reg(cpu, dst2, ldl_le_p(data + reg_size));
+            } else {
+                hvf_set_reg(cpu, dst1, ldq_le_p(data));
+                hvf_set_reg(cpu, dst2, ldq_le_p(data + reg_size));
+            }
+        } else {
+            success = false;
+        }
+        break;
+    }
+    case 0x29000000: { /* stp signed offset */
+        uint64_t src1 = hvf_get_reg(cpu, inst & 0x1F);
+        uint64_t base = hvf_get_reg(cpu, (inst >> 5) & 0x1F);
+        uint64_t src2 = hvf_get_reg(cpu, (inst >> 10) & 0x1F);
+        uint32_t off = (inst >> 15) & 0x7F;
+        uint32_t reg_size = (inst & BIT(31)) == 0 ? 4 : 8;
+        uint64_t addr = (off & BIT(6)) == 0
+            ? base + (off * reg_size)
+            : base - ((64 - (off & 0x3F)) * reg_size);
+        uint8_t data[16] = { 0 };
+        if (reg_size == 4) {
+            stl_le_p(data, src1 & 0xFFFFFFFF);
+            stl_le_p(data + reg_size, src2 & 0xFFFFFFFF);
+        } else {
+            stq_le_p(data, src1);
+            stq_le_p(data + reg_size, src2);
+        }
+        success = address_space_write(as, addr, MEMTXATTRS_UNSPECIFIED,
+                                      data, reg_size * 2) == MEMTX_OK;
+        break;
+    }
+    default:
+        switch (inst & 0xBFC00000) {
+        case 0xB8000000: { /* str pre/post index */
+            if ((inst & BIT(10)) == 0) {
+                return false;
+            }
+            bool post = (inst & BIT(11)) == 0;
+            uint64_t src = hvf_get_reg(cpu, inst & 0x1F);
+            uint32_t base_reg = (inst >> 5) & 0x1F;
+            uint32_t reg_size = (inst & BIT(30)) == 0 ? 4 : 8;
+            int32_t imm9 = sextract32(inst, 12, 9);
+            uint64_t base_val = hvf_get_reg(cpu, base_reg);
+            uint64_t addr = base_val + (post ? 0 : imm9);
+            success = address_space_write(as, addr, MEMTXATTRS_UNSPECIFIED,
+                                          &src, reg_size) == MEMTX_OK;
+            if (success) {
+                hvf_set_reg(cpu, base_reg,
+                            base_val + imm9);
+            }
+            break;
+        }
+        case 0xB9000000: { /* str unsigned offset */
+            uint64_t src = hvf_get_reg(cpu, inst & 0x1F);
+            uint64_t base = hvf_get_reg(cpu, (inst >> 5) & 0x1F);
+            uint32_t off = (inst >> 10) & 0xFFF;
+            uint32_t reg_size = (inst & BIT(30)) == 0 ? 4 : 8;
+            uint64_t addr = base + (off * reg_size);
+            success = address_space_write(as, addr, MEMTXATTRS_UNSPECIFIED,
+                                          &src, reg_size) == MEMTX_OK;
+            break;
+        }
+        case 0xB9400000: { /* ldr unsigned offset */
+            uint32_t dst = inst & 0x1F;
+            uint64_t base = hvf_get_reg(cpu, (inst >> 5) & 0x1F);
+            uint32_t off = (inst >> 10) & 0xFFF;
+            uint32_t reg_size = (inst & BIT(30)) == 0 ? 4 : 8;
+            uint64_t addr = base + (off * reg_size);
+            uint64_t val = 0;
+            if (address_space_read(as, addr, MEMTXATTRS_UNSPECIFIED,
+                                   &val, reg_size) == MEMTX_OK) {
+                hvf_set_reg(cpu, dst, val);
+            } else {
+                success = false;
+            }
+            break;
+        }
+        case 0xB8400000: { /* ldr pre/post index */
+            if ((inst & BIT(10)) == 0) {
+                return false;
+            }
+            bool post = (inst & BIT(11)) == 0;
+            uint32_t dst = inst & 0x1F;
+            uint32_t base_reg = (inst >> 5) & 0x1F;
+            uint32_t reg_size = (inst & BIT(30)) == 0 ? 4 : 8;
+            int32_t imm9 = sextract32(inst, 12, 9);
+            uint64_t base_val = hvf_get_reg(cpu, base_reg);
+            uint64_t addr = base_val + (post ? 0 : imm9);
+            uint64_t val = 0;
+            if (address_space_read(as, addr, MEMTXATTRS_UNSPECIFIED,
+                                   &val, reg_size) == MEMTX_OK) {
+                hvf_set_reg(cpu, dst, val);
+                hvf_set_reg(cpu, base_reg,
+                            base_val + imm9);
+            } else {
+                success = false;
+            }
+            break;
+        }
+        default:
+            qemu_log_mask(LOG_UNIMP,
+                          "hvf: non-ISV: unhandled insn 0x%08x at PC 0x%llx\n",
+                          inst, (unsigned long long)env->pc);
+            return false;
+        }
+        break;
+    }
+
+    return success;
+}
+
 static int hvf_handle_exception(CPUState *cpu, hv_vcpu_exit_exception_t *excp)
 {
     CPUARMState *env = cpu_env(cpu);
@@ -2433,25 +2598,32 @@ static int hvf_handle_exception(CPUState *cpu, hv_vcpu_exit_exception_t *excp)
          */
         assert(!s1ptw);
 
-        /*
-         * TODO: ISV will be 0 for SIMD or SVE accesses.
-         * Inject the exception into the guest.
-         */
-        assert(isv);
-
-        /*
-         * Emulate MMIO.
-         * TODO: Inject faults for errors.
-         */
-        if (iswrite) {
-            val = hvf_get_reg(cpu, srt);
-            address_space_write(as, ipa, MEMTXATTRS_UNSPECIFIED, &val, len);
-        } else {
-            address_space_read(as, ipa, MEMTXATTRS_UNSPECIFIED, &val, len);
-            if (sse) {
-                val = sextract64(val, 0, len * 8);
+        if (isv) {
+            /*
+             * Emulate MMIO — syndrome tells us everything we need.
+             * TODO: Inject faults for errors.
+             */
+            if (iswrite) {
+                val = hvf_get_reg(cpu, srt);
+                address_space_write(as, ipa, MEMTXATTRS_UNSPECIFIED,
+                                    &val, len);
+            } else {
+                address_space_read(as, ipa, MEMTXATTRS_UNSPECIFIED,
+                                   &val, len);
+                if (sse) {
+                    val = sextract64(val, 0, len * 8);
+                }
+                hvf_set_reg(cpu, srt, val);
             }
-            hvf_set_reg(cpu, srt, val);
+        } else {
+            /*
+             * ISV=0: instruction syndrome not valid (stp, ldp, SIMD, etc.)
+             * Fetch and decode the faulting instruction from guest memory.
+             */
+            if (!hvf_emulate_non_isv(cpu, as)) {
+                hvf_raise_exception(cpu, EXCP_DATA_ABORT, syndrome, 1);
+                break;
+            }
         }
         advance_pc = true;
         break;
