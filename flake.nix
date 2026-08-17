@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/master";
+    flake-utils.url = "github:numtide/flake-utils";
     keycodemapdb = {
       url = "gitlab:qemu-project/keycodemapdb/f5772a62ec52591ff6870b7e8ef32482371f22c6";
       flake = false;
@@ -17,72 +18,73 @@
     };
   };
 
-  outputs = { self, nixpkgs, keycodemapdb, berkeley-softfloat-3, berkeley-testfloat-3 }:
-    let
-      system = "aarch64-darwin";
-      pkgs = nixpkgs.legacyPackages.${system};
-    in {
-      packages.${system} = {
-        qemu = pkgs.qemu.overrideAttrs (old: {
-          pname = "qemu-vmapple";
-          version = "unstable-2026-05-25";
-          src = self;
-          patches = [];
-          outputs = [ "out" ];
+  outputs = { self, nixpkgs, flake-utils, keycodemapdb, berkeley-softfloat-3, berkeley-testfloat-3 }:
+    flake-utils.lib.eachSystem [ "aarch64-darwin" "x86_64-darwin" ] (system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+      in {
+        packages = {
+          qemu = pkgs.qemu.overrideAttrs (old: {
+            pname = "qemu-vmapple";
+            version = "unstable-2026-05-25";
+            src = self;
+            patches = [];
+            outputs = [ "out" ];
 
-          buildInputs = (old.buildInputs or []) ++ [
-            pkgs.apple-sdk_15
-            (pkgs.darwinMinVersionHook "15.0")
-          ];
+            buildInputs = (old.buildInputs or []) ++ [
+              pkgs.apple-sdk_15
+              (pkgs.darwinMinVersionHook "15.0")
+            ];
 
-          postUnpack = ''
-            rm -rf $sourceRoot/subprojects/keycodemapdb
-            cp -r ${keycodemapdb} $sourceRoot/subprojects/keycodemapdb
-            rm -rf $sourceRoot/subprojects/berkeley-softfloat-3
-            cp -r ${berkeley-softfloat-3} $sourceRoot/subprojects/berkeley-softfloat-3
-            chmod -R u+w $sourceRoot/subprojects/berkeley-softfloat-3
-            cp -r $sourceRoot/subprojects/packagefiles/berkeley-softfloat-3/* $sourceRoot/subprojects/berkeley-softfloat-3/
-            rm -rf $sourceRoot/subprojects/berkeley-testfloat-3
-            cp -r ${berkeley-testfloat-3} $sourceRoot/subprojects/berkeley-testfloat-3
-            chmod -R u+w $sourceRoot/subprojects/berkeley-testfloat-3
-            cp -r $sourceRoot/subprojects/packagefiles/berkeley-testfloat-3/* $sourceRoot/subprojects/berkeley-testfloat-3/
-          '';
+            postUnpack = ''
+              rm -rf $sourceRoot/subprojects/keycodemapdb
+              cp -r ${keycodemapdb} $sourceRoot/subprojects/keycodemapdb
+              rm -rf $sourceRoot/subprojects/berkeley-softfloat-3
+              cp -r ${berkeley-softfloat-3} $sourceRoot/subprojects/berkeley-softfloat-3
+              chmod -R u+w $sourceRoot/subprojects/berkeley-softfloat-3
+              cp -r $sourceRoot/subprojects/packagefiles/berkeley-softfloat-3/* $sourceRoot/subprojects/berkeley-softfloat-3/
+              rm -rf $sourceRoot/subprojects/berkeley-testfloat-3
+              cp -r ${berkeley-testfloat-3} $sourceRoot/subprojects/berkeley-testfloat-3
+              chmod -R u+w $sourceRoot/subprojects/berkeley-testfloat-3
+              cp -r $sourceRoot/subprojects/packagefiles/berkeley-testfloat-3/* $sourceRoot/subprojects/berkeley-testfloat-3/
+            '';
 
-          postPatch = ''
-            sed -i '/^Rez /d; /^SetFile /d' scripts/entitlement.sh
-            sed -i 's/CONFIG_VMAPPLE=n/CONFIG_VMAPPLE=y/' configs/devices/aarch64-softmmu/default.mak
-          '';
+            postPatch = ''
+              sed -i '/^Rez /d; /^SetFile /d' scripts/entitlement.sh
+              sed -i 's/CONFIG_VMAPPLE=n/CONFIG_VMAPPLE=y/' configs/devices/aarch64-softmmu/default.mak
+            '';
 
-          preConfigure = ''
-            unset CPP
-            chmod +x ./scripts/shaderinclude.py
-            patchShebangs .
-            mv VERSION QEMU_VERSION
-            substituteInPlace configure \
-              --replace-fail '$source_path/VERSION' '$source_path/QEMU_VERSION'
-            substituteInPlace meson.build \
-              --replace-fail "'VERSION'" "'QEMU_VERSION'"
-            substituteInPlace docs/conf.py \
-              --replace-fail "'../VERSION'" "'../QEMU_VERSION'"
-            substituteInPlace python/qemu/machine/machine.py \
-              --replace-fail /var/tmp "$TMPDIR"
-          '';
+            preConfigure = ''
+              unset CPP
+              chmod +x ./scripts/shaderinclude.py
+              patchShebangs .
+              mv VERSION QEMU_VERSION
+              substituteInPlace configure \
+                --replace-fail '$source_path/VERSION' '$source_path/QEMU_VERSION'
+              substituteInPlace meson.build \
+                --replace-fail "'VERSION'" "'QEMU_VERSION'"
+              substituteInPlace docs/conf.py \
+                --replace-fail "'../VERSION'" "'../QEMU_VERSION'"
+              substituteInPlace python/qemu/machine/machine.py \
+                --replace-fail /var/tmp "$TMPDIR"
+            '';
 
-          configureFlags = [
-            "--disable-strip"
-            "--target-list=aarch64-softmmu,x86_64-softmmu"
-            "--enable-cocoa"
-            "--enable-hvf"
-            "--enable-slirp"
-            "--enable-gnutls"
-            "--disable-sdl"
-            "--disable-gtk"
-            "--disable-werror"
-            "--disable-docs"
-            "--disable-guest-agent"
-          ];
-        });
-        default = self.packages.${system}.qemu;
-      };
-    };
+            configureFlags = [
+              "--disable-strip"
+              "--target-list=aarch64-softmmu,x86_64-softmmu"
+              "--enable-cocoa"
+              "--enable-hvf"
+              "--enable-slirp"
+              "--enable-gnutls"
+              "--disable-sdl"
+              "--disable-gtk"
+              "--disable-werror"
+              "--disable-docs"
+              "--disable-guest-agent"
+            ];
+          });
+          default = self.packages.${system}.qemu;
+        };
+      }
+    );
 }
