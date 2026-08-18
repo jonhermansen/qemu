@@ -22,6 +22,7 @@
     flake-utils.lib.eachSystem [ "aarch64-darwin" "x86_64-darwin" ] (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        isAarch64 = system == "aarch64-darwin";
       in {
         packages = {
           qemu = pkgs.qemu.overrideAttrs (old: {
@@ -51,6 +52,7 @@
 
             postPatch = ''
               sed -i '/^Rez /d; /^SetFile /d' scripts/entitlement.sh
+            '' + pkgs.lib.optionalString isAarch64 ''
               sed -i 's/CONFIG_VMAPPLE=n/CONFIG_VMAPPLE=y/' configs/devices/aarch64-softmmu/default.mak
             '';
 
@@ -73,7 +75,6 @@
               "--disable-strip"
               "--target-list=aarch64-softmmu,x86_64-softmmu"
               "--enable-cocoa"
-              "--enable-hvf"
               "--enable-slirp"
               "--enable-gnutls"
               "--disable-sdl"
@@ -81,6 +82,8 @@
               "--disable-werror"
               "--disable-docs"
               "--disable-guest-agent"
+            ] ++ pkgs.lib.optionals isAarch64 [
+              "--enable-hvf"
             ];
           });
           default = self.packages.${system}.qemu;
